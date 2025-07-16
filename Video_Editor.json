@@ -1,0 +1,167 @@
+{
+  "name": "Video_Editor",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -500,
+        -80
+      ],
+      "id": "7b466623-32e8-4801-8de4-f42a02444044",
+      "name": "When clicking ‘Test workflow’"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.cohere.ai/generate",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer "
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"prompt\": \"Generate a valid Shotstack edit template JSON. Only output valid JSON, no explanation, no extra text. Generate a full, complete JSON object with no missing fields or cutoffs. Do not omit any closing braces. Ensure all keys have values.Use these assets: 1. Image: https://res.cloudinary.com/dgvmbdudh/image/upload/v1745625048/Coffee_1_gcxhrh.jpg 2. Video: https://res.cloudinary.com/dgvmbdudh/video/upload/v1745625164/Video_Coffee_3_sl6fdl.mp4 3. Image: https://res.cloudinary.com/dgvmbdudh/image/upload/v1745625075/Coffee_2_gwfj2v.jpg 4. Video: https://res.cloudinary.com/dgvmbdudh/video/upload/v1745625159/Coffee_Video_4_sysp24.mp4. Requirements: Each scene must be 5–6 seconds long. Use fade transitions between clips. Output format: mp4. Resolution: 1280x720.\",\n  \"model\": \"command\", \n  \"temperature\": 0.7,\n  \"max_tokens\": 500\n}\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -160,
+        120
+      ],
+      "id": "207da9ad-7834-486c-90d8-af64e49ca715",
+      "name": "HTTP Request1"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.shotstack.io/edit/stage/render",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        560,
+        100
+      ],
+      "id": "690afc10-b4d9-4b37-8585-1c822606c043",
+      "name": "HTTP Request",
+      "alwaysOutputData": true,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "Su15bMl813Bix6By",
+          "name": "Shotstack"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// This code goes into the 'Function' node in n8n.\n// It transforms the input JSON (from Cohere) into the Shotstack Edit API format,\n// including mapping resolution dimensions to Shotstack's accepted aliases.\n\n// Helper function to convert HH:MM:SS.mmm string to seconds\nfunction timeStringToSeconds(timeString) {\n  const parts = timeString.split(':');\n  if (parts.length !== 3) {\n      console.error(`Invalid time string format: ${timeString}`);\n      return 0; // Return 0 or handle error appropriately\n  }\n  const hours = parseInt(parts[0], 10);\n  const minutes = parseInt(parts[1], 10);\n  const secondsAndMillis = parts[2].split('.');\n  const seconds = parseInt(secondsAndMillis[0], 10);\n  const milliseconds = parseInt(secondsAndMillis[1], 10) || 0; // Handle cases without milliseconds\n\n  return hours * 3600 + minutes * 60 + seconds + milliseconds / 1000;\n}\n\n// The input data is an array of items from the previous node (Cohere output)\nconst inputItems = items; // n8n provides the input items in the 'items' variable\n\n// Check if there's at least one item and if it has the expected 'text' property\nif (!inputItems || inputItems.length === 0 || !inputItems[0].json || typeof inputItems[0].json.text !== 'string') {\n  throw new Error(\"Input data structure is not as expected. Expected items[0].json.text as a string.\");\n}\n\nlet parsedInputData;\ntry {\n  // Parse the JSON string from the 'text' property\n  parsedInputData = JSON.parse(inputItems[0].json.text);\n} catch (error) {\n  throw new Error(`Failed to parse JSON from input text: ${error.message}`);\n}\n\n// Now check the structure of the parsed data\nif (!parsedInputData || !parsedInputData.input_assets_array || !parsedInputData.output) {\n    throw new Error(\"Parsed input data structure is missing 'input_assets_array' or 'output'.\");\n}\n\nconst assetsArray = parsedInputData.input_assets_array;\nconst outputConfig = parsedInputData.output;\n\n// Build the Shotstack Edit object\nconst shotstackEdit = {\n  timeline: {\n    tracks: [\n      {\n        clips: [] // Clips will be added here\n      }\n    ]\n  },\n  output: {} // Output configuration will be added here\n};\n\n// Populate the clips array\nassetsArray.forEach(asset => {\n  const startTimeSeconds = timeStringToSeconds(asset.start_time);\n  const durationSeconds = timeStringToSeconds(asset.duration);\n\n  let assetType;\n  // Map your layer_type to Shotstack asset types\n  if (asset.layer_type === \"Image\") {\n    assetType = \"image\";\n  } else if (asset.layer_type === \"Video\") {\n    assetType = \"video\";\n  } else {\n    // Handle other types or skip if unknown\n    console.warn(`Unknown layer_type: ${asset.layer_type} for asset: ${asset.asset_url}. Skipping asset.`);\n    return; // Skip this asset\n  }\n\n  const clip = {\n    asset: {\n      type: assetType,\n      src: asset.asset_url\n      // You might add other asset specific properties here if needed,\n      // like volume for video, or size/position for image/video\n      // For image, you might want to add 'fit' or 'position' properties\n      // For video, you might want to add 'volume' or 'effect' properties\n    },\n    start: startTimeSeconds,\n    length: durationSeconds\n    // Add transitions, effects, etc. here if your LLM chain generates them\n    // Example transition:\n    // transition: {\n    //   in: 'fade'\n    // }\n  };\n\n  shotstackEdit.timeline.tracks[0].clips.push(clip);\n});\n\n// Populate the output configuration\n// Map your output properties to Shotstack output properties\n// Also, map the resolution string to one of Shotstack's accepted aliases\nlet shotstackResolution = outputConfig.resolution;\nswitch (outputConfig.resolution) {\n    case \"1280x720\":\n        shotstackResolution = \"hd\";\n        break;\n    case \"1920x1080\":\n        shotstackResolution = \"1080\";\n        break;\n    case \"3840x2160\":\n        shotstackResolution = \"4k\";\n        break;\n    // Add other mappings if necessary, or a default case\n    default:\n        // If the LLM outputs a resolution string that is not a standard dimension,\n        // we'll pass it through. Shotstack might accept it if it's one of the\n        // explicit aliases like \"preview\", \"mobile\", \"sd\", \"hd\", \"1080\", \"4k\".\n        // If the LLM outputs something else, Shotstack will likely return a validation error again.\n        console.warn(`LLM outputted unknown resolution dimension string: ${outputConfig.resolution}. Passing through.`);\n        break;\n}\n\n\nshotstackEdit.output = {\n  format: outputConfig.output_format, // e.g., \"mp4\"\n  resolution: shotstackResolution, // Use the mapped or original resolution string\n  // Shotstack output doesn't typically need start_time or duration here.\n  // The duration is determined by the timeline based on the clips.\n  // You can add other Shotstack output properties like `fps`, `quality`, etc. if needed.\n  // For example:\n  // fps: 30,\n  // quality: 'high'\n};\n\n// The Function node should return an array of items.\n// We'll return a single item containing the transformed Shotstack Edit object.\nreturn [{ json: shotstackEdit }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        40
+      ],
+      "id": "6a7a094b-18c5-4788-b4cc-1057a16b6649",
+      "name": "Code"
+    },
+    {
+      "parameters": {
+        "url": "https://api.shotstack.io/stage/render/a629f194-219b-4721-8330-db43360e985f",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        780,
+        100
+      ],
+      "id": "60ef3c20-2ad4-4089-a33f-d084efbae884",
+      "name": "HTTP Request2",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "Su15bMl813Bix6By",
+          "name": "Shotstack"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When clicking ‘Test workflow’": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request1": {
+      "main": [
+        [
+          {
+            "node": "Code",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "33f2aeb5-d798-4e9c-bb2b-3e8c12de37fc",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "191dcf254b866b6d9a80fb50372e6bfe411704487a16d470262c4d370bf07bfd"
+  },
+  "id": "O39kFpe5WPcLKEZ1",
+  "tags": []
+}
